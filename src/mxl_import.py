@@ -25,6 +25,7 @@ from mxl_creator import (Creator, encode_item, build_blob, _rows, mods_stats, FL
 import stat_ids as S
 from mxl_format_fix import body_kind
 from mxl_lang import T
+from mxl_log import log
 from mxl_statparse import StatParser, subtract, merge, _norm, canon
 
 CLASS_INDEX = {'Amazon': 0, 'Sorceress': 1, 'Necromancer': 2, 'Paladin': 3, 'Barbarian': 4, 'Druid': 5, 'Assassin': 6}
@@ -45,20 +46,58 @@ class ImportError_(Exception):
     pass
 
 
+def _err_text(err):
+    """Error of a skipped item for the report: our own errors as written, others with their type."""
+    return str(err) if isinstance(err, ImportError_) else f'{type(err).__name__}: {err}'
+
+
 # ---------------------------------------------------------------------------------------------- page
+def _mhtml_html(text):
+    """HTML part of a page saved as a single file (.mhtml, quoted-printable / base64), else None."""
+    if 'multipart/related' not in text[:4096].lower():
+        return None
+    import email
+    msg = email.message_from_string(text)
+    for part in msg.walk():
+        if part.get_content_type() == 'text/html':
+            raw = part.get_payload(decode=True) or b''
+            return raw.decode(part.get_content_charset() or 'utf-8', errors='replace')
+    return None
+
+
+def _json_body(body):
+    """JSON of a <script> block, read as is or html-escaped (&quot; / &#34; ...), else None."""
+    body = body.strip()
+    for txt in (body, html.unescape(body)):
+        try:
+            return json.loads(txt)
+        except ValueError:
+            continue
+    return None
+
+
 def load_page(path):
-    """(build dict or None, [item dicts]) of a saved NotArmory page (or of a plain items .json)."""
+    """(build dict or None, [item dicts]) of a saved NotArmory page (or of a plain items .json).
+    The page's blocks are found by their ids (notarmory-export / notarmory-items), else by their content."""
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         text = f.read()
     if text.lstrip().startswith('['):
         return None, json.loads(text)
+    text = _mhtml_html(text) or text
     build, items = None, None
-    for m in re.finditer(r'<script[^>]*>(.*?)</script>', text, re.S):
-        body = html.unescape(m.group(1)).strip() if '&quot;' in m.group(1) else m.group(1).strip()
-        if body.startswith('[{') and '"description_lines"' in body:
-            items = json.loads(body)
-        elif body.startswith('{') and '"skillPoints"' in body:
-            build = json.loads(body)
+    for m in re.finditer(r'<script([^>]*)>(.*?)</script>', text, re.S):
+        attrs, body = m.group(1), m.group(2).strip()
+        if not body.startswith(('{', '[')):
+            continue
+        ident = re.search(r'id=["\']?notarmory-(export|items)\b', attrs)
+        kind = ident.group(1) if ident else None
+        if kind is None and 'description_lines' not in body and 'skillPoints' not in body:
+            continue
+        val = _json_body(body)
+        if isinstance(val, list) and (kind == 'items' or val and isinstance(val[0], dict) and 'description_lines' in val[0]):
+            items = val
+        elif isinstance(val, dict) and (kind == 'export' or 'skillPoints' in val) and (val.get('class') or val.get('level')):
+            build = val
     if items is None:
         raise ImportError_(T('im.err.no_items', 'no item list found in this page (save the character page with "Save as… Web page")'))
     return build, items
@@ -86,6 +125,8 @@ class Importer:
         self.d = data
         self.cr = Creator(data)
         self.sp = StatParser(data, level)
+        self.level = max(1, int(level or 1))
+        self.guessed = 0                 # items without an item level on the page
         self.report = []
         self._affix_names = None
 
@@ -193,6 +234,24 @@ class Importer:
                 return i
         return 0 if gfx else None
 
+    def _ilvl(self, e, code):
+        """(item level, guessed) of a page item: the page's "ilvl" (the save's value), else its "ilvl_original",
+        else (runes, keys, trophies, potions... have none on the page) the character's level, at least the base's
+        level. Clamped to 1-127 (7 bits in the save)."""
+        for key in ('ilvl', 'ilvl_original'):
+            try:
+                v = int(e.get(key) or 0)
+            except (TypeError, ValueError):
+                v = 0
+            if v > 0:
+                return min(127, v), False
+        try:
+            floor = int(self.cr.qlvl(code) or 1)
+        except Exception:
+            floor = 1
+        self.guessed += 1
+        return max(1, min(127, max(floor, min(self.level, 99)))), True
+
     def _defense(self, e):
         """(shown defense, base defense in parentheses or None) of the "Defense: 4123 (1494)" line."""
         for t, c in _lines(e):
@@ -250,8 +309,9 @@ class Importer:
                 continue
             try:
                 crec, _ = self.item_record(s, None)
-            except ImportError_ as err:
-                self.note(T('im.socket_skip', '{item}: socketed item skipped ({error})', item=name, error=err))
+                encode_item(crec, self.d)                  # a socketed item the save cannot hold fails here, not the parent
+            except Exception as err:
+                self.note(T('im.socket_skip', '{item}: socketed item skipped ({error})', item=name, error=_err_text(err)))
                 continue
             children.append(crec)
             st, _miss = self.sp.parse(_stat_lines(s))
@@ -294,9 +354,12 @@ class Importer:
         for m in missing:
             if (m[0] if isinstance(m, tuple) else m) in blue and (b.kind != 'misc' or not cr.item_desc(code)):
                 self.note(T('im.line', '{item}: line not read: {line}', item=name, line=m[0] if isinstance(m, tuple) else m))
+        # NotArmory's "quality" is the save's: "High" is Superior (its display_quality)
         quality = {'unique': 'unique', 'set': 'set', 'rw': 'normal', 'rare': 'rare', 'magic': 'magic',
-                   'crafted': 'crafted', 'superior': 'superior', 'low': 'low', 'normal': 'normal', '': 'normal'}.get(q, 'normal')
-        rec.update(id=random.getrandbits(32), ilvl=max(1, min(127, int(e.get('ilvl') or 1))), quality=quality)
+                   'crafted': 'crafted', 'superior': 'superior', 'high': 'superior', 'low': 'low', 'normal': 'normal',
+                   '': 'normal'}.get(q, 'normal')
+        ilvl, guessed = self._ilvl(e, code)
+        rec.update(id=random.getrandbits(32), ilvl=ilvl, quality=quality)
         if e.get('eth'):
             rec['flags'] |= FLAG_ETHEREAL
         img = self._image(e, code)
@@ -310,6 +373,9 @@ class Importer:
                 rec['quality'] = 'normal'
             else:
                 rec['set_unique_id'] = row
+                if guessed:                      # an item level the item could not drop at
+                    lst = d.set_items if quality == 'set' else d.uniques
+                    rec['ilvl'] = max(rec['ilvl'], min(127, int(lst[row].get('level') or 1)))
                 stats, _added = self._hidden_and_text(e, quality, row, stats)
         elif quality == 'magic':
             rec['prefix'], rec['suffix'] = self._magic_ids(name, code)
@@ -669,10 +735,16 @@ class Importer:
 
 
 # ---------------------------------------------------------------------------------------------- character
+def valid_name(name):
+    """A name the game accepts: 2 to 15 letters A-Z (- and _ allowed). Letters such as é or ư pass isalpha() but
+    cannot be written in the save."""
+    return 2 <= len(name) <= 15 and all(ch.isascii() and ch.isalpha() or ch in '-_' for ch in name)
+
+
 def new_character(template_path, name, cls_name, data):
     """Character (not saved) made from an existing save: name, class, the class's starting attributes / life /
     mana / stamina, no skills, no items, level 1."""
-    if not (2 <= len(name) <= 15) or not all(ch.isalpha() or ch in '-_' for ch in name):
+    if not valid_name(name):
         raise CharError(T('ch.err.name', 'name: 2 to 15 letters (- and _ allowed)'))
     cls = CLASS_INDEX.get(cls_name)
     if cls is None:
@@ -815,19 +887,30 @@ def apply_build(ch, build, data, report):
     _cap_stats(ch, data, report)
 
 
-def import_character(page_path, template_path, save_dir, name, data, cls_name=None, backup=True):
+def import_character(page_path, template_path, save_dir, name, data, cls_name=None, backup=True, level=None):
     """Builds name.d2s (+ .stash, .key, .map, .ma*) in save_dir from a saved character page.
+    cls_name / level: the user's choice when the page has no build planner export (they win over the page's).
     Returns (d2s path, report lines)."""
     from mxl_save import commit_file, check_game_closed, load_character, EditError
     build, items = load_page(page_path)
-    cls_name = cls_name or (build or {}).get('class') or 'Druid'
-    level = int((build or {}).get('level') or 1)
+    no_build = not build
+    cls_name = cls_name or (build or {}).get('class')
+    if not cls_name:
+        raise ImportError_(T('im.err.no_class', 'the page has no class: choose the class of the character'))
+    if no_build or level:
+        build = dict(build or {}, level=int(level or (build or {}).get('level') or 1))
+    level = int(build.get('level') or 1)
+    log.info('import: %s as "%s" (%s level %s, %d items on the page%s), template %s', page_path, name, cls_name, level,
+             len(items), ', no build data on the page' if no_build else '', template_path)
     check_game_closed()
     dst = os.path.join(save_dir, name + '.d2s')
     if os.path.exists(dst):
         raise CharError(T('im.exists', '{name} already exists in the save folder', name=name))
     ch = new_character(template_path, name, cls_name, data)
     report = []
+    if no_build:
+        report.append(T('im.no_build', 'the page has no build data: class and level as chosen; skills, quests and '
+                        'attributes are not set'))
     apply_build(ch, build, data, report)
     imp = Importer(data, level)
     stash_blobs = []
@@ -852,14 +935,18 @@ def import_character(page_path, template_path, save_dir, name, data, cls_name=No
                 raise ImportError_(T('im.err.loc', 'location {loc} not supported', loc=repr(loc)))
             blob = imp.item_blob(e, where)
             it = MC.blob_item(blob, data)
-        except (ImportError_, KeyError, ValueError, struct.error) as err:
-            report.append(T('im.not_imported', '{item}: not imported ({error})', item=e.get('display_name'), error=err))
+        except Exception as err:                 # one item the save cannot hold is skipped, not the whole import
+            report.append(T('im.not_imported', '{item}: not imported ({error})', item=e.get('display_name'),
+                            error=_err_text(err)))
             continue
         if loc == 'Stash':
             stash_blobs.append(blob)
         else:
             ch.items.append(Entry(it, blob))
         placed += 1
+    if imp.guessed:
+        report.append(T('im.ilvl_guess', '{n} items have no item level on the page (runes, keys, trophies, potions...): '
+                        'set to the character level, at least their base level', n=imp.guessed))
     report = report + imp.report
     content = ch.build()
     n_items = len(ch.items)
@@ -905,6 +992,7 @@ def import_character(page_path, template_path, save_dir, name, data, cls_name=No
     report.insert(0, T('im.summary', '{name}: {cls} level {level}, {placed} of {total} items imported '
                        '({on_char} on the character, {in_stash} in the stash).', name=name, cls=cls_name, level=ch.level,
                        placed=placed, total=len(items), on_char=n_items, in_stash=len(stash_blobs)))
+    log.info('import done: %s\n%s', report[0], '\n'.join('    • ' + r for r in report[1:]))
     return dst, report
 
 
@@ -922,6 +1010,58 @@ def _template(app):
         if os.path.exists(p):
             return p
     return None
+
+
+def _ask_class_level(root, data, cls=None, level=None):
+    """Class and level of a page without the build planner export (item list only): (class name, level) or None."""
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    names = list(CLASS_INDEX)
+    win = tk.Toplevel(root)
+    win.title(T('im.title', 'Import character'))
+    win.transient(root)
+    win.resizable(False, False)
+    tk.Label(win, text=T('im.ask_class', 'This page has no build data (class, level, skills, quests).\n'
+                         'Choose the class and level of the new character:'), justify='left').grid(
+        row=0, column=0, columnspan=2, padx=12, pady=(12, 8), sticky='w')
+    tk.Label(win, text=T('im.class', 'Class')).grid(row=1, column=0, padx=(12, 6), pady=4, sticky='w')
+    cv = tk.StringVar(value=cls if cls in CLASS_INDEX else '')
+    ttk.Combobox(win, textvariable=cv, values=names, state='readonly', width=16).grid(row=1, column=1, padx=(0, 12), pady=4,
+                                                                                       sticky='w')
+    tk.Label(win, text=T('im.lvl', 'Level')).grid(row=2, column=0, padx=(12, 6), pady=4, sticky='w')
+    lv = tk.StringVar(value=str(level or 1))
+    ttk.Spinbox(win, from_=1, to=255, textvariable=lv, width=6).grid(row=2, column=1, padx=(0, 12), pady=4, sticky='w')
+    out = []
+
+    def ok():
+        c = cv.get()
+        if c not in CLASS_INDEX:
+            messagebox.showerror(T('im.title', 'Import character'), T('im.err.pick_class', 'Choose a class.'), parent=win)
+            return
+        try:
+            top = MC.max_level(data, CLASS_INDEX[c])
+        except Exception:
+            top = 255
+        try:
+            n = int(lv.get())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= top:
+            messagebox.showerror(T('im.title', 'Import character'), T('im.err.pick_level', 'Level: 1 to {top}.', top=top),
+                                 parent=win)
+            return
+        out.append((c, n))
+        win.destroy()
+
+    row = tk.Frame(win)
+    row.grid(row=3, column=0, columnspan=2, pady=(8, 12))
+    tk.Button(row, text='OK', width=10, command=ok).pack(side='left', padx=4)
+    tk.Button(row, text=T('library.cancel', 'Cancel'), width=10, command=win.destroy).pack(side='left', padx=4)
+    win.bind('<Return>', lambda _e: ok())
+    win.bind('<Escape>', lambda _e: win.destroy())
+    win.grab_set()
+    root.wait_window(win)
+    return out[0] if out else None
 
 
 def import_dialog(app):
@@ -950,16 +1090,27 @@ def import_dialog(app):
         messagebox.showerror(T('im.title', 'Import character'), str(e), parent=root)
         return
     default = re.sub(r'[^A-Za-z_-]', '', str((build or {}).get('name') or ''))[:15]
-    cls = (build or {}).get('class') or 'Druid'
+    cls = (build or {}).get('class')
+    level = None
+    if cls not in CLASS_INDEX or not (build or {}).get('level'):
+        picked = _ask_class_level(root, app.data, cls if cls in CLASS_INDEX else None, (build or {}).get('level'))
+        if not picked:
+            return
+        cls, level = picked
     while True:
         name = simpledialog.askstring(
             T('im.title', 'Import character'),
             T('im.ask_name', '{cls} level {level}, {n} items.\n\nName of the new character:', cls=cls,
-              level=(build or {}).get('level', '?'), n=len(items)),
+              level=level or (build or {}).get('level', '?'), n=len(items)),
             initialvalue=default, parent=root)
         if not name:
             return
         name = name.strip()
+        if not valid_name(name):
+            messagebox.showerror(T('im.title', 'Import character'), T('ch.err.name', 'name: 2 to 15 letters (- and _ allowed)'),
+                                 parent=root)
+            default = name
+            continue
         if os.path.exists(os.path.join(app.save_dir, name + '.d2s')):
             messagebox.showerror(T('im.title', 'Import character'), T('im.exists_dot', '{name} already exists in the save folder.', name=name),
                                  parent=root)
@@ -969,10 +1120,13 @@ def import_dialog(app):
     root.configure(cursor='watch')
     root.update_idletasks()
     try:
-        dst, report = import_character(path, tmpl, app.save_dir, name, app.data, cls)
+        dst, report = import_character(path, tmpl, app.save_dir, name, app.data, cls, level=level)
     except Exception as e:                                   # nothing is written when the build fails
+        log.exception('import FAILED: %s as "%s"', path, name)
         root.configure(cursor='')
-        messagebox.showerror(T('im.title', 'Import character'), f'{type(e).__name__}: {e}', parent=root)
+        import mxl_log
+        more = '\n\n' + T('log.details', 'Details: {file}', file=mxl_log.path()) if mxl_log.path() else ''
+        messagebox.showerror(T('im.title', 'Import character'), f'{type(e).__name__}: {e}{more}', parent=root)
         return
     root.configure(cursor='')
     try:

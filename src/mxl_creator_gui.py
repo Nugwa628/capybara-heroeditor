@@ -1315,7 +1315,9 @@ def run():
         mxl_splash.main()
         sys.exit(0)
     mxl_splash.start()
-    import mxl_format_fix                 # Sigma item layouts the collector's reader did not know (before anything reads)
+    import mxl_log                        # capybara.log in the settings folder: saves, backups, imports, errors
+    mxl_log.install()
+    import mxl_format_fix                # Sigma item layouts the collector's reader did not know (before anything reads)
     mxl_format_fix.install()
     import mxl_gui
     rename_app(mxl_gui)
@@ -1332,6 +1334,7 @@ def run():
     import mxl_app_icon
     mxl_app_icon.install(mxl_gui.App)
     mxl_splash.install(mxl_gui.App)       # last: outermost, closes the splash once everything is built
+    mxl_log.wrap_saves()                  # writers bound by name in the modules imported since install()
     try:
         mxl_gui.main()
     finally:

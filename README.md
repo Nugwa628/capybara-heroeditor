@@ -17,6 +17,10 @@ An offline item creator and character editor for **Median XL**, built on top of 
 2. Unzip it anywhere and run `MXL Capybara Editor.exe`.
 3. Close the game before you save any changes.
 
+## Reporting a problem
+The editor keeps a log at `%LOCALAPPDATA%\MXL Item Collector\capybara.log`, which records saves, backups, imports and errors.
+Attach it to your bug report, along with the saved character page if the problem is with an import.
+
 ## Source
 The Python source is in [`src/`](src). The editor is a set of modules added to the MXL Item Collector exe:
 `repack.py` rebuilds the PyInstaller exe with these modules included, and `rsrc.py` sets the capybara icon.

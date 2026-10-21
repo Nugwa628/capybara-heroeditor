@@ -3,3 +3,5 @@
 *.zip
 _internal/
 MXL Capybara Editor/
+__pycache__/
+*.pyc

@@ -246,6 +246,7 @@ for the windows). The Character window keeps the old Hero Editor's own icon.
 - `mxl_import.py`: the character page import (page reader, item rebuilder, new character, Import button).
 - `mxl_d2look.py`, `mxl_d2look_art.py`, `mxl_d2ui_dc6.py`: D2 look (layout, game art cache, DC6 decoder).
 - `mxl_splash.py`: loading screen (door animation with the capybara).
+- `mxl_log.py`: the log file `capybara.log` in the settings folder (saves, backups, imports, errors).
 - `mxl_lang.py`: translation helper of the added windows (see Languages).
 - `repack.py`, `carch.py`: rebuild the PyInstaller exe with these modules (Python 3.10:
   `python repack.py "MXL Item Collector.exe" "MXL Item Collector (Creator).exe"`, plugin folder path set inside).
