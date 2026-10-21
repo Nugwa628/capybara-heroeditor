@@ -18,7 +18,7 @@ An offline item creator and character editor for **Median XL**, built on top of 
 3. Close the game before you save any changes.
 
 ## Reporting a problem
-The editor keeps a log at `%LOCALAPPDATA%\MXL Item Collector\capybara.log`, which records saves, backups, imports and errors.
+The editor keeps a log at `%LOCALAPPDATA%\MXL Capybara Editor\capybara.log`, which records saves, backups, imports and errors.
 Attach it to your bug report, along with the saved character page if the problem is with an import.
 
 ## Source
