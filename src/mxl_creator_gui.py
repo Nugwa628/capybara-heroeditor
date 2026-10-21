@@ -1310,7 +1310,9 @@ def rename_app(mxl_gui):
 
 
 def run():
-    import mxl_splash                     # the loading screen: its own process (the exe again with --capy-splash)
+    import mxl_userdir                    # own settings folder; the launcher did it already (splash process too)
+    mxl_userdir.setup()
+    import mxl_splash                    # the loading screen: its own process (the exe again with --capy-splash)
     if mxl_splash.FLAG_ARG in sys.argv:
         mxl_splash.main()
         sys.exit(0)

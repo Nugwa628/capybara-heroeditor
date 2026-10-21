@@ -100,7 +100,49 @@ def load_page(path):
             build = val
     if items is None:
         raise ImportError_(T('im.err.no_items', 'no item list found in this page (save the character page with "Save as… Web page")'))
+    if build is None:
+        build = _page_build(text)
     return build, items
+
+
+def _strip_tags(t):
+    return html.unescape(re.sub(r'<[^>]+>', '', t)).strip()
+
+
+def _page_build(text):
+    """Build of a page without the build planner export (NotArmory pages since October 2026: the planners get it
+    from the site with a token), read from what the page shows: name, class, level, base attributes and free
+    points, and the skill points of the class trees (the "Oskills" box is item bonuses: not taken). The quests are
+    not on these pages. Same keys as the export (+ "_source": "page"), else None."""
+    m = re.search(r'data-class="([A-Za-z]+)"[^>]*data-level="(\d+)"', text)
+    cls, level = (m.group(1), int(m.group(2))) if m else (None, None)
+    if not cls:
+        m = re.search(r'class="na-class">\s*\[([A-Za-z]+)\]', text)
+        cls = m.group(1) if m else None
+    if not level:
+        m = re.search(r'class="na-level">[^<]*<b>(\d+)</b>', text)
+        level = int(m.group(1)) if m else None
+    if cls not in CLASS_INDEX or not level:
+        return None
+    build = {'class': cls, 'level': level, '_source': 'page'}
+    m = re.search(r'<h1 class="na-name">(.*?)</h1>', text, re.S)
+    if m:
+        name = re.sub(r'<span class="na-(title|acc|class)">.*?</span>', '', m.group(1), flags=re.S)
+        build['name'] = _strip_tags(name)
+    stats = []
+    for key in ('strength', 'dexterity', 'vitality', 'energy'):
+        m = re.search(rf'class="na-stat na-stat-{key}"><dt>[^<]*</dt><dd>([\d,]+)</dd>', text)
+        if m:
+            stats.append(f'{{{{{key}}}}}={m.group(1).replace(",", "")}')
+    build['stats'] = '\n'.join(stats)
+    skills = {}
+    for cell in re.finditer(r'<section class="na-skillcell([^"]*)">(.*?)</section>', text, re.S):
+        if 'na-oskills' in cell.group(1):
+            continue
+        for s in re.finditer(r'<div class="na-skill"><span>(.*?)</span><span class="na-points">(\d+)</span></div>', cell.group(2)):
+            skills[_strip_tags(s.group(1))] = int(s.group(2))
+    build['skillPoints'] = skills
+    return build
 
 
 def _lines(e):
@@ -887,21 +929,30 @@ def apply_build(ch, build, data, report):
     _cap_stats(ch, data, report)
 
 
-def import_character(page_path, template_path, save_dir, name, data, cls_name=None, backup=True, level=None):
+def import_character(page_path, template_path, save_dir, name, data, cls_name=None, backup=True, level=None,
+                     quests=None):
     """Builds name.d2s (+ .stash, .key, .map, .ma*) in save_dir from a saved character page.
-    cls_name / level: the user's choice when the page has no build planner export (they win over the page's).
+    cls_name / level: the user's choice when the page has no build data (they win over the page's).
+    quests: difficulties (0 normal, 1 nightmare, 2 hell) the user ticked as completed, for pages without the
+    export's quest list (None: the export's).
     Returns (d2s path, report lines)."""
     from mxl_save import commit_file, check_game_closed, load_character, EditError
     build, items = load_page(page_path)
     no_build = not build
+    from_page = (build or {}).get('_source') == 'page'
     cls_name = cls_name or (build or {}).get('class')
     if not cls_name:
         raise ImportError_(T('im.err.no_class', 'the page has no class: choose the class of the character'))
     if no_build or level:
         build = dict(build or {}, level=int(level or (build or {}).get('level') or 1))
+    if quests is not None:
+        # the export's form: one rewarded quest per difficulty marks the difficulty played through (apply_build)
+        build = dict(build, questsCompleted={'den_of_evil': {dn: k in quests for k, dn in
+                                                             enumerate(('normal', 'nightmare', 'hell'))}})
     level = int(build.get('level') or 1)
-    log.info('import: %s as "%s" (%s level %s, %d items on the page%s), template %s', page_path, name, cls_name, level,
-             len(items), ', no build data on the page' if no_build else '', template_path)
+    log.info('import: %s as "%s" (%s level %s, %d items on the page, build data: %s, quests: %s), template %s', page_path,
+             name, cls_name, level, len(items), 'none' if no_build else 'page' if from_page else 'export',
+             'export' if quests is None else sorted(quests), template_path)
     check_game_closed()
     dst = os.path.join(save_dir, name + '.d2s')
     if os.path.exists(dst):
@@ -911,6 +962,9 @@ def import_character(page_path, template_path, save_dir, name, data, cls_name=No
     if no_build:
         report.append(T('im.no_build', 'the page has no build data: class and level as chosen; skills, quests and '
                         'attributes are not set'))
+    elif from_page:
+        report.append(T('im.page_build', 'the page has no build planner data: class, level, attributes and skills read '
+                        'from the page'))
     apply_build(ch, build, data, report)
     imp = Importer(data, level)
     stash_blobs = []
@@ -1012,8 +1066,13 @@ def _template(app):
     return None
 
 
-def _ask_class_level(root, data, cls=None, level=None):
-    """Class and level of a page without the build planner export (item list only): (class name, level) or None."""
+QUEST_DEFAULT_LEVEL = 100        # pages without quests: the three difficulties are ticked from this level on
+
+
+def _ask_build(root, data, cls=None, level=None, ask_class=True, ask_quests=True):
+    """What the page does not hold: class and level (item list only) and / or the difficulties whose quests are done
+    (no page since NotArmory moved the build planner export off the page). (class, level, set of difficulties or
+    None) or None when cancelled."""
     import tkinter as tk
     from tkinter import ttk, messagebox
     names = list(CLASS_INDEX)
@@ -1021,16 +1080,34 @@ def _ask_class_level(root, data, cls=None, level=None):
     win.title(T('im.title', 'Import character'))
     win.transient(root)
     win.resizable(False, False)
-    tk.Label(win, text=T('im.ask_class', 'This page has no build data (class, level, skills, quests).\n'
-                         'Choose the class and level of the new character:'), justify='left').grid(
-        row=0, column=0, columnspan=2, padx=12, pady=(12, 8), sticky='w')
-    tk.Label(win, text=T('im.class', 'Class')).grid(row=1, column=0, padx=(12, 6), pady=4, sticky='w')
+    if ask_class:
+        intro = T('im.ask_class', 'This page has no build data (class, level, skills, quests).\n'
+                  'Choose the class and level of the new character:')
+    else:
+        intro = T('im.ask_quests', 'This page does not list the quests ({cls} level {level}).\n'
+                  'Tick the difficulties whose quests are done (all quests, bosses and waypoints):', cls=cls, level=level)
+    tk.Label(win, text=intro, justify='left').grid(row=0, column=0, columnspan=4, padx=12, pady=(12, 8), sticky='w')
     cv = tk.StringVar(value=cls if cls in CLASS_INDEX else '')
-    ttk.Combobox(win, textvariable=cv, values=names, state='readonly', width=16).grid(row=1, column=1, padx=(0, 12), pady=4,
-                                                                                       sticky='w')
-    tk.Label(win, text=T('im.lvl', 'Level')).grid(row=2, column=0, padx=(12, 6), pady=4, sticky='w')
     lv = tk.StringVar(value=str(level or 1))
-    ttk.Spinbox(win, from_=1, to=255, textvariable=lv, width=6).grid(row=2, column=1, padx=(0, 12), pady=4, sticky='w')
+    r = 1
+    if ask_class:
+        tk.Label(win, text=T('im.class', 'Class')).grid(row=r, column=0, padx=(12, 6), pady=4, sticky='w')
+        ttk.Combobox(win, textvariable=cv, values=names, state='readonly', width=16).grid(
+            row=r, column=1, columnspan=3, padx=(0, 12), pady=4, sticky='w')
+        tk.Label(win, text=T('im.lvl', 'Level')).grid(row=r + 1, column=0, padx=(12, 6), pady=4, sticky='w')
+        ttk.Spinbox(win, from_=1, to=255, textvariable=lv, width=6).grid(row=r + 1, column=1, padx=(0, 12), pady=4,
+                                                                           sticky='w')
+        r += 2
+    qv = []
+    if ask_quests:
+        tk.Label(win, text=T('im.quests_done', 'Quests done')).grid(row=r, column=0, padx=(12, 6), pady=4, sticky='w')
+        tick = bool(level and int(level) >= QUEST_DEFAULT_LEVEL)
+        for k in range(3):
+            v = tk.BooleanVar(value=tick)
+            ttk.Checkbutton(win, text=MC.difficulty_name(k), variable=v).grid(row=r, column=1 + k, padx=(0, 10), pady=4,
+                                                                              sticky='w')
+            qv.append(v)
+        r += 1
     out = []
 
     def ok():
@@ -1050,11 +1127,18 @@ def _ask_class_level(root, data, cls=None, level=None):
             messagebox.showerror(T('im.title', 'Import character'), T('im.err.pick_level', 'Level: 1 to {top}.', top=top),
                                  parent=win)
             return
-        out.append((c, n))
+        done = {k for k, v in enumerate(qv) if v.get()}
+        if any(k not in done for k in range(max(done, default=0))):
+            # a difficulty opens only once the one before is finished
+            messagebox.showerror(T('im.title', 'Import character'),
+                                 T('im.err.quest_order', 'A difficulty can only be done after the ones before it.'),
+                                 parent=win)
+            return
+        out.append((c, n, done if ask_quests else None))
         win.destroy()
 
     row = tk.Frame(win)
-    row.grid(row=3, column=0, columnspan=2, pady=(8, 12))
+    row.grid(row=r, column=0, columnspan=4, pady=(8, 12))
     tk.Button(row, text='OK', width=10, command=ok).pack(side='left', padx=4)
     tk.Button(row, text=T('library.cancel', 'Cancel'), width=10, command=win.destroy).pack(side='left', padx=4)
     win.bind('<Return>', lambda _e: ok())
@@ -1091,12 +1175,16 @@ def import_dialog(app):
         return
     default = re.sub(r'[^A-Za-z_-]', '', str((build or {}).get('name') or ''))[:15]
     cls = (build or {}).get('class')
-    level = None
-    if cls not in CLASS_INDEX or not (build or {}).get('level'):
-        picked = _ask_class_level(root, app.data, cls if cls in CLASS_INDEX else None, (build or {}).get('level'))
+    level = quests = None
+    ask_class = cls not in CLASS_INDEX or not (build or {}).get('level')
+    ask_quests = 'questsCompleted' not in (build or {})
+    if ask_class or ask_quests:
+        picked = _ask_build(root, app.data, cls if cls in CLASS_INDEX else None, (build or {}).get('level'),
+                            ask_class=ask_class, ask_quests=ask_quests)
         if not picked:
             return
-        cls, level = picked
+        cls, picked_level, quests = picked
+        level = picked_level if ask_class else None
     while True:
         name = simpledialog.askstring(
             T('im.title', 'Import character'),
@@ -1120,7 +1208,7 @@ def import_dialog(app):
     root.configure(cursor='watch')
     root.update_idletasks()
     try:
-        dst, report = import_character(path, tmpl, app.save_dir, name, app.data, cls, level=level)
+        dst, report = import_character(path, tmpl, app.save_dir, name, app.data, cls, level=level, quests=quests)
     except Exception as e:                                   # nothing is written when the build fails
         log.exception('import FAILED: %s as "%s"', path, name)
         root.configure(cursor='')

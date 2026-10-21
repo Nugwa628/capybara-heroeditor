@@ -59,13 +59,13 @@ if __name__ == '__main__':
         sys.exit(f'run repack.py with Python 3.10 (this is {sys.version.split()[0]}): the exe cannot load other bytecode')
     plugin = HERE
     extra = {}
-    for mod in ('mxl_creator', 'mxl_creator_gui', 'mxl_char', 'mxl_char_gui', 'mxl_inv_gui', 'mxl_he_art', 'mxl_app_icon', 'mxl_statparse', 'mxl_import', 'mxl_format_fix', 'mxl_lang', 'mxl_d2ui_dc6', 'mxl_d2look_art', 'mxl_d2look', 'mxl_splash', 'mxl_log'):
+    for mod in ('mxl_creator', 'mxl_creator_gui', 'mxl_char', 'mxl_char_gui', 'mxl_inv_gui', 'mxl_he_art', 'mxl_app_icon', 'mxl_statparse', 'mxl_import', 'mxl_format_fix', 'mxl_lang', 'mxl_d2ui_dc6', 'mxl_d2look_art', 'mxl_d2look', 'mxl_splash', 'mxl_log', 'mxl_userdir'):
         extra[mod] = compile(open(f'{plugin}/{mod}.py', encoding='utf-8').read(), f'{mod}.py', 'exec')
     script = [e for e in ents if e['typ'] == 's' and e['name'] == 'mxl_gui'][0]
     extra['mxl_gui'] = marshal.loads(zlib.decompress(script['data']))      # original GUI, now importable
     z = [e for e in ents if e['typ'] == 'z'][0]
     pyz = build_pyz(z['data'], extra)
-    launcher = compile("import sys\nimport mxl_splash\nif mxl_splash.FLAG_ARG in sys.argv:\n    mxl_splash.main()\nelse:\n"
+    launcher = compile("import sys\nimport mxl_userdir\nmxl_userdir.setup()\nimport mxl_splash\nif mxl_splash.FLAG_ARG in sys.argv:\n    mxl_splash.main()\nelse:\n"
                        "    mxl_splash.start()\n    import mxl_creator_gui\n    mxl_creator_gui.run()\n", 'mxl_gui.py', 'exec')
     ld = marshal.dumps(launcher)
     replace = {'PYZ.pyz': (pyz, len(pyz), 0), 'mxl_gui': (zlib.compress(ld, 9), len(ld), 1)}
@@ -76,3 +76,10 @@ if __name__ == '__main__':
         out = rsrc.replace_icons(out, open(ico, 'rb').read(), start)
     open(dst, 'wb').write(out)
     print('written', dst, len(out))
+    # ttkbootstrap's own window icon (set as the default of every window when the app starts): the capybara too
+    icons = os.path.join(os.path.dirname(os.path.abspath(dst)), '_internal', 'ttkbootstrap', 'assets', 'app_icons')
+    if os.path.isdir(icons):
+        import base64, mxl_app_icon
+        open(os.path.join(icons, 'ttkbootstrap.ico'), 'wb').write(base64.b64decode(mxl_app_icon.ICO_FILE))
+        open(os.path.join(icons, 'ttkbootstrap.png'), 'wb').write(base64.b64decode(mxl_app_icon.ICONS[0]))
+        print('capybara icons written in', icons)

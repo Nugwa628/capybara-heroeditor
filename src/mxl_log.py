@@ -1,4 +1,4 @@
-"""Log file of the Capybara Editor: capybara.log in the settings folder (%LOCALAPPDATA%\\MXL Item Collector), next to
+"""Log file of the Capybara Editor: capybara.log in the settings folder (%LOCALAPPDATA%\\MXL Capybara Editor, see mxl_userdir), next to
 settings.json. Kept to 1 MB, with the 3 previous files as capybara.log.1 .. .3.
 
 What is written:
@@ -38,7 +38,7 @@ def _folder():
         import paths
         return paths.USER_DIR
     except Exception:
-        return os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'MXL Item Collector')
+        return os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'MXL Capybara Editor')
 
 
 class _Stream:
@@ -82,6 +82,15 @@ def install():
         return
     log.info('---- start: %s (Python %s, %s %s)', sys.executable, platform.python_version(), platform.system(),
              platform.version())
+    try:
+        import mxl_userdir
+        if mxl_userdir.migrated_from:
+            log.info('settings and game data copied from %s to %s', mxl_userdir.migrated_from, folder)
+        if mxl_userdir.migrate_error:
+            log.error('copy of the MXL Item Collector folder failed, starting with a new folder: %s',
+                      mxl_userdir.migrate_error)
+    except Exception:
+        pass
     if sys.stdout is None:
         sys.stdout = _Stream(logging.INFO)
     if sys.stderr is None:

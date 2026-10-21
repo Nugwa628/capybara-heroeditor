@@ -40,4 +40,5 @@ Run `src/repack.py` with **Python 3.10** (the exe's own version) on the original
 py -3.10 src/repack.py "MXL Item Collector.exe" "MXL Capybara Editor.exe" --icon=src/capybara.ico
 ```
 
-Put the new exe in a copy of the release folder, next to `_internal/`, and copy `lang/*.json` into its `lang/` folder.
+Write the new exe into a copy of the release folder, next to `_internal/`. `repack.py` then also replaces ttkbootstrap's
+window icon in that `_internal/` with the capybara. Copy `lang/*.json` into the folder's `lang/` folder.
