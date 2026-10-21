@@ -1,0 +1,5 @@
+*.exe
+*.7z
+*.zip
+_internal/
+MXL Capybara Editor/
