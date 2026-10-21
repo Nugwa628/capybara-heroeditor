@@ -1,7 +1,10 @@
 """Rebuild a PyInstaller (6.x, onedir) exe: same bootloader, same CArchive entries, PYZ with extra modules,
-entry script replaced. Usage: repack.py in.exe out.exe [--identity]"""
-import struct, zlib, marshal, sys
-sys.path.insert(0, '/root/work/tools')
+entry script replaced. Usage: repack.py in.exe out.exe [--identity] [--icon=capybara.ico]
+in.exe is the original MXL Item Collector.exe. Run it with Python 3.10, the exe's own version: the modules are
+compiled here and stored as 3.10 bytecode."""
+import os, struct, zlib, marshal, sys
+HERE = os.path.dirname(os.path.abspath(__file__))          # carch.py and the editor's modules (src/)
+sys.path.insert(0, HERE)
 import carch
 
 def build_pyz(z, extra):
@@ -52,7 +55,9 @@ if __name__ == '__main__':
         out = build_exe(d, start, ents, info, {})
         print('identical:', out == d, len(out), len(d))
         sys.exit()
-    plugin = '/root/work/plugin'
+    if sys.version_info[:2] != (3, 10):
+        sys.exit(f'run repack.py with Python 3.10 (this is {sys.version.split()[0]}): the exe cannot load other bytecode')
+    plugin = HERE
     extra = {}
     for mod in ('mxl_creator', 'mxl_creator_gui', 'mxl_char', 'mxl_char_gui', 'mxl_inv_gui', 'mxl_he_art', 'mxl_app_icon', 'mxl_statparse', 'mxl_import', 'mxl_format_fix', 'mxl_lang', 'mxl_d2ui_dc6', 'mxl_d2look_art', 'mxl_d2look', 'mxl_splash', 'mxl_log'):
         extra[mod] = compile(open(f'{plugin}/{mod}.py', encoding='utf-8').read(), f'{mod}.py', 'exec')

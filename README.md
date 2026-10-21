@@ -13,7 +13,7 @@ An offline item creator and character editor for **Median XL**, built on top of 
 - Languages: English, French, Vietnamese (`lang/`).
 
 ## Install
-1. Download `MXL-Capybara-Editor-v1.0.zip` from the [Releases](../../releases) page.
+1. Download the latest `MXL-Capybara-Editor-v*.zip` from the [Releases](../../releases) page.
 2. Unzip it anywhere and run `MXL Capybara Editor.exe`.
 3. Close the game before you save any changes.
 
@@ -32,3 +32,12 @@ Median XL game data belong to their respective authors.
 
 ## Credits
 Hero Editor button art and the window layout come from Hero Editor 1.04 by ZonFire99 and Mastadex. Glory to the real Heroes.
+
+## Building
+Run `src/repack.py` with **Python 3.10** (the exe's own version) on the original `MXL Item Collector.exe`:
+
+```
+py -3.10 src/repack.py "MXL Item Collector.exe" "MXL Capybara Editor.exe" --icon=src/capybara.ico
+```
+
+Put the new exe in a copy of the release folder, next to `_internal/`, and copy `lang/*.json` into its `lang/` folder.
